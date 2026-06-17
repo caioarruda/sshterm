@@ -31,6 +31,9 @@ jobs:
             libz-mingw-w64-dev \
             zip
 
+      - name: Tidy modules
+        run: go mod tidy
+
       - name: Download modules
         run: go mod download
 
