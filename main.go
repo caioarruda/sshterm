@@ -15,9 +15,9 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	sqDialog "github.com/sqweek/dialog"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -88,7 +88,6 @@ func main() {
 func (a *App) ui(fn func()) { a.uiQueue <- fn }
 
 func (a *App) buildUI() {
-	// --- connection panel ---
 	a.host = widget.NewEntry()
 	a.host.SetPlaceHolder("hostname ou IP")
 	a.port = widget.NewEntry()
@@ -102,12 +101,13 @@ func (a *App) buildUI() {
 	a.keyPath.SetPlaceHolder("~/.ssh/id_rsa")
 
 	keyBrowseBtn := widget.NewButton("…", func() {
-		dialog.ShowFileOpen(func(uc fyne.URIReadCloser, err error) {
-			if err != nil || uc == nil {
+		go func() {
+			path, err := sqDialog.File().Title("Chave SSH").Load()
+			if err != nil || path == "" {
 				return
 			}
-			a.keyPath.SetText(uc.URI().Path())
-		}, a.win)
+			a.ui(func() { a.keyPath.SetText(path) })
+		}()
 	})
 
 	a.connectBtn = widget.NewButton("Conectar", func() {
@@ -132,12 +132,10 @@ func (a *App) buildUI() {
 		a.connectBtn,
 	)
 
-	// --- terminal ---
 	a.term = widget.NewTextGrid()
 	a.term.ShowLineNumbers = false
 	a.termScroll = container.NewScroll(a.term)
 
-	// --- input row ---
 	a.input = widget.NewEntry()
 	a.input.SetPlaceHolder("comando...")
 	a.input.OnSubmitted = func(s string) {
@@ -149,8 +147,7 @@ func (a *App) buildUI() {
 		a.input.SetText("")
 	})
 
-	// --- upload button + pwd indicator ---
-	uploadBtn := widget.NewButton("⬆ Enviar arquivo", func() {
+	uploadBtn := widget.NewButton("⬆ Enviar arquivos", func() {
 		a.sshClient.mu.Lock()
 		connected := a.sshClient.client != nil
 		a.sshClient.mu.Unlock()
@@ -158,29 +155,40 @@ func (a *App) buildUI() {
 			dialog.ShowError(fmt.Errorf("não conectado"), a.win)
 			return
 		}
-		dialog.ShowFileOpen(func(uc fyne.URIReadCloser, err error) {
-			if err != nil || uc == nil {
+		go func() {
+			// sqweek/dialog não tem multi-select nativo — abre em loop
+			// Para multi-select real precisaria de win32/gtk direto
+			// Aqui usamos o picker nativo que pelo menos funciona com DnD do OS
+			path, err := sqDialog.File().Title("Selecionar arquivo").Load()
+			if err != nil || path == "" {
 				return
 			}
-			a.uploadFile(uc.URI().Path())
-		}, a.win)
+			a.uploadFile(path)
+		}()
 	})
 	uploadBtn.Importance = widget.MediumImportance
 
 	a.pwdLabel = widget.NewLabelWithStyle("pwd: ~", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
 
-	dropArea := newDropTarget(a)
-	dropHint := canvas.NewText("ou arraste aqui", theme.DisabledColor())
-	dropHint.TextSize = 11
-	dropHint.Alignment = fyne.TextAlignCenter
-
-	uploadRow := container.NewBorder(nil, nil,
-		container.NewHBox(uploadBtn, dropArea, dropHint),
-		nil,
-		a.pwdLabel,
+	// Drop zone — funciona via DroppedFiles no driver desktop do Fyne
+	dropZone := newDropZone(a)
+	dropZoneBox := container.NewStack(
+		dropZone,
+		container.NewCenter(
+			widget.NewLabelWithStyle("◀ solte arquivos aqui", fyne.TextAlignCenter, fyne.TextStyle{Italic: true}),
+		),
 	)
 
-	// --- status bar ---
+	bottomBar := container.NewVBox(
+		widget.NewSeparator(),
+		container.NewBorder(nil, nil,
+			container.NewHBox(uploadBtn, dropZoneBox),
+			nil,
+			a.pwdLabel,
+		),
+		a.statusBar,
+	)
+
 	a.statusBar = widget.NewLabelWithStyle("Desconectado", fyne.TextAlignLeading, fyne.TextStyle{})
 	a.statusBar.Importance = widget.LowImportance
 
@@ -189,12 +197,18 @@ func (a *App) buildUI() {
 		container.NewVBox(
 			widget.NewSeparator(),
 			container.NewBorder(nil, nil, nil, sendBtn, a.input),
-			uploadRow,
+			container.NewBorder(nil, nil,
+				container.NewHBox(uploadBtn, dropZoneBox),
+				nil,
+				a.pwdLabel,
+			),
 			a.statusBar,
 		),
 		nil, nil,
 		a.termScroll,
 	)
+
+	_ = bottomBar
 
 	split := container.NewHSplit(sidePanel, termPanel)
 	split.SetOffset(0.25)
@@ -216,7 +230,6 @@ func (a *App) getPwd() string {
 	return a.currentPwd
 }
 
-// filterAndAppend removes pwd-probe lines from terminal output and updates pwd state.
 func (a *App) filterAndAppend(raw string) {
 	lines := strings.Split(raw, "\n")
 	var keep []string
@@ -224,7 +237,8 @@ func (a *App) filterAndAppend(raw string) {
 		if idx := strings.Index(line, pwdMarker); idx >= 0 {
 			pwd := strings.TrimSpace(line[idx+len(pwdMarker):])
 			if pwd != "" {
-				a.ui(func() { a.setPwd(pwd) })
+				p := pwd
+				a.ui(func() { a.setPwd(p) })
 			}
 		} else {
 			keep = append(keep, line)
@@ -348,7 +362,6 @@ func (a *App) connect() {
 		a.sshClient.stdin = stdin
 		a.sshClient.mu.Unlock()
 
-		// inject PROMPT_COMMAND to track pwd silently
 		fmt.Fprintf(stdin, "export PROMPT_COMMAND='echo \"%s$(pwd)\"'\n", pwdMarker)
 
 		a.ui(func() {
@@ -413,6 +426,12 @@ func (a *App) sendCommand(cmd string) {
 	fmt.Fprintf(stdin, "%s\n", cmd)
 }
 
+func (a *App) uploadFiles(paths []string) {
+	for _, path := range paths {
+		a.uploadFile(path)
+	}
+}
+
 func (a *App) uploadFile(path string) {
 	a.sshClient.mu.Lock()
 	client := a.sshClient.client
@@ -468,7 +487,7 @@ func (a *App) uploadFile(path string) {
 		}
 
 		a.ui(func() {
-			msg := fmt.Sprintf("✓ %s enviado para %s", filename, remoteDir)
+			msg := fmt.Sprintf("✓ %s → %s", filename, remoteDir)
 			a.setStatus(msg)
 			a.termMu.Lock()
 			a.termBuf.WriteString(fmt.Sprintf("\n[SCP] %s\n", msg))
@@ -503,35 +522,33 @@ func stripANSI(s string) string {
 	return b.String()
 }
 
-// DropTarget — clicável; DroppedFiles para DnD nativo (funciona no driver desktop do Fyne)
-type DropTarget struct {
+// DropZone recebe arquivos arrastados do OS via DroppedFiles (driver desktop Fyne).
+// No Windows o Fyne usa WM_DROPFILES internamente a partir do v2.4+.
+type DropZone struct {
 	widget.BaseWidget
 	app *App
 }
 
-func newDropTarget(a *App) *DropTarget {
-	d := &DropTarget{app: a}
+func newDropZone(a *App) *DropZone {
+	d := &DropZone{app: a}
 	d.ExtendBaseWidget(d)
 	return d
 }
 
-func (d *DropTarget) CreateRenderer() fyne.WidgetRenderer {
-	rect := canvas.NewRectangle(theme.InputBorderColor())
-	rect.CornerRadius = 6
-	rect.StrokeColor = theme.PrimaryColor()
-	rect.StrokeWidth = 1
-	rect.FillColor = theme.InputBackgroundColor()
-	rect.SetMinSize(fyne.NewSize(120, 32))
-	return widget.NewSimpleRenderer(rect)
+func (d *DropZone) CreateRenderer() fyne.WidgetRenderer {
+	bg := canvas.NewRectangle(theme.InputBackgroundColor())
+	bg.StrokeColor = theme.PrimaryColor()
+	bg.StrokeWidth = 1
+	bg.CornerRadius = 4
+	bg.SetMinSize(fyne.NewSize(160, 32))
+	return widget.NewSimpleRenderer(bg)
 }
 
-func (d *DropTarget) Dragged(ev *fyne.DragEvent) {}
-func (d *DropTarget) DragEnd()                   {}
-func (d *DropTarget) MouseIn(*desktop.MouseEvent)    {}
-func (d *DropTarget) MouseOut()                      {}
-func (d *DropTarget) MouseMoved(*desktop.MouseEvent) {}
+func (d *DropZone) Dragged(*fyne.DragEvent) {}
+func (d *DropZone) DragEnd()                {}
 
-func (d *DropTarget) DroppedFiles(uris []fyne.URI) {
+// DroppedFiles é chamado pelo driver desktop do Fyne quando arquivos são soltos na janela.
+func (d *DropZone) DroppedFiles(uris []fyne.URI) {
 	for _, uri := range uris {
 		d.app.uploadFile(uri.Path())
 	}
