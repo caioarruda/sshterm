@@ -21,6 +21,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+const pwdMarker = "__SSHTERM_PWD__:"
+
 type SSHClient struct {
 	client  *ssh.Client
 	session *ssh.Session
@@ -36,7 +38,7 @@ type App struct {
 	termScroll *container.Scroll
 	input      *widget.Entry
 	statusBar  *widget.Label
-	remoteDir  *widget.Entry
+	pwdLabel   *widget.Label
 	connectBtn *widget.Button
 	host       *widget.Entry
 	port       *widget.Entry
@@ -46,6 +48,8 @@ type App struct {
 	uiQueue    chan func()
 	termBuf    strings.Builder
 	termMu     sync.Mutex
+	currentPwd string
+	pwdMu      sync.Mutex
 }
 
 func main() {
@@ -53,17 +57,16 @@ func main() {
 	a.Settings().SetTheme(theme.DarkTheme())
 
 	myApp := &App{
-		fyneApp:   a,
-		sshClient: &SSHClient{},
-		uiQueue:   make(chan func(), 64),
+		fyneApp:    a,
+		sshClient:  &SSHClient{},
+		uiQueue:    make(chan func(), 256),
+		currentPwd: "~",
 	}
 
 	myApp.win = a.NewWindow("SSH Terminal")
-	myApp.win.Resize(fyne.NewSize(1024, 768))
+	myApp.win.Resize(fyne.NewSize(1100, 700))
 	myApp.buildUI()
 
-	// drain UI queue via ticker — Fyne runs canvas.Refresh safely from any goroutine,
-	// but widget state changes are safer serialized here
 	go func() {
 		t := time.NewTicker(16 * time.Millisecond)
 		for range t.C {
@@ -82,11 +85,10 @@ func main() {
 	myApp.win.ShowAndRun()
 }
 
-func (a *App) ui(fn func()) {
-	a.uiQueue <- fn
-}
+func (a *App) ui(fn func()) { a.uiQueue <- fn }
 
 func (a *App) buildUI() {
+	// --- connection panel ---
 	a.host = widget.NewEntry()
 	a.host.SetPlaceHolder("hostname ou IP")
 	a.port = widget.NewEntry()
@@ -95,11 +97,11 @@ func (a *App) buildUI() {
 	a.user.SetPlaceHolder("usuario")
 	a.password = widget.NewEntry()
 	a.password.Password = true
-	a.password.SetPlaceHolder("senha (ou vazio para usar chave)")
+	a.password.SetPlaceHolder("senha")
 	a.keyPath = widget.NewEntry()
-	a.keyPath.SetPlaceHolder("~/.ssh/id_rsa (opcional)")
+	a.keyPath.SetPlaceHolder("~/.ssh/id_rsa")
 
-	keyBrowseBtn := widget.NewButton("...", func() {
+	keyBrowseBtn := widget.NewButton("…", func() {
 		dialog.ShowFileOpen(func(uc fyne.URIReadCloser, err error) {
 			if err != nil || uc == nil {
 				return
@@ -117,82 +119,135 @@ func (a *App) buildUI() {
 	})
 	a.connectBtn.Importance = widget.HighImportance
 
-	connectForm := container.NewVBox(
+	sidePanel := container.NewVBox(
+		widget.NewLabelWithStyle("SSH Terminal", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewSeparator(),
 		widget.NewForm(
 			widget.NewFormItem("Host", a.host),
 			widget.NewFormItem("Porta", a.port),
 			widget.NewFormItem("Usuário", a.user),
 			widget.NewFormItem("Senha", a.password),
-			widget.NewFormItem("Chave SSH", container.NewBorder(nil, nil, nil, keyBrowseBtn, a.keyPath)),
+			widget.NewFormItem("Chave", container.NewBorder(nil, nil, nil, keyBrowseBtn, a.keyPath)),
 		),
 		a.connectBtn,
 	)
 
+	// --- terminal ---
 	a.term = widget.NewTextGrid()
 	a.term.ShowLineNumbers = false
 	a.termScroll = container.NewScroll(a.term)
-	a.termScroll.SetMinSize(fyne.NewSize(700, 400))
 
+	// --- input row ---
 	a.input = widget.NewEntry()
 	a.input.SetPlaceHolder("comando...")
 	a.input.OnSubmitted = func(s string) {
 		a.sendCommand(s)
 		a.input.SetText("")
 	}
-
 	sendBtn := widget.NewButton("↵", func() {
 		a.sendCommand(a.input.Text)
 		a.input.SetText("")
 	})
 
-	a.remoteDir = widget.NewEntry()
-	a.remoteDir.SetText("~")
-	a.remoteDir.SetPlaceHolder("diretório remoto destino")
+	// --- upload button + pwd indicator ---
+	uploadBtn := widget.NewButton("⬆ Enviar arquivo", func() {
+		a.sshClient.mu.Lock()
+		connected := a.sshClient.client != nil
+		a.sshClient.mu.Unlock()
+		if !connected {
+			dialog.ShowError(fmt.Errorf("não conectado"), a.win)
+			return
+		}
+		dialog.ShowFileOpen(func(uc fyne.URIReadCloser, err error) {
+			if err != nil || uc == nil {
+				return
+			}
+			a.uploadFile(uc.URI().Path())
+		}, a.win)
+	})
+	uploadBtn.Importance = widget.MediumImportance
+
+	a.pwdLabel = widget.NewLabelWithStyle("pwd: ~", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
 
 	dropArea := newDropTarget(a)
-	dropLabel := canvas.NewText("↓ Arraste arquivos aqui para copiar via SCP", theme.ForegroundColor())
-	dropLabel.TextStyle = fyne.TextStyle{Italic: true}
-	dropLabel.Alignment = fyne.TextAlignCenter
+	dropHint := canvas.NewText("ou arraste aqui", theme.DisabledColor())
+	dropHint.TextSize = 11
+	dropHint.Alignment = fyne.TextAlignCenter
 
-	dropBox := container.NewStack(dropArea, container.NewCenter(dropLabel))
+	uploadRow := container.NewBorder(nil, nil,
+		container.NewHBox(uploadBtn, dropArea, dropHint),
+		nil,
+		a.pwdLabel,
+	)
 
-	a.statusBar = widget.NewLabel("Desconectado")
+	// --- status bar ---
+	a.statusBar = widget.NewLabelWithStyle("Desconectado", fyne.TextAlignLeading, fyne.TextStyle{})
 	a.statusBar.Importance = widget.LowImportance
 
 	termPanel := container.NewBorder(
 		nil,
 		container.NewVBox(
+			widget.NewSeparator(),
 			container.NewBorder(nil, nil, nil, sendBtn, a.input),
-			container.NewBorder(nil, nil, widget.NewLabel("Destino SCP:"), nil, a.remoteDir),
-			dropBox,
+			uploadRow,
 			a.statusBar,
 		),
 		nil, nil,
 		a.termScroll,
 	)
 
-	split := container.NewHSplit(connectForm, termPanel)
-	split.SetOffset(0.28)
-
+	split := container.NewHSplit(sidePanel, termPanel)
+	split.SetOffset(0.25)
 	a.win.SetContent(split)
 }
 
-func (a *App) setStatus(msg string) {
-	a.statusBar.SetText(msg)
+func (a *App) setStatus(msg string) { a.statusBar.SetText(msg) }
+
+func (a *App) setPwd(pwd string) {
+	a.pwdMu.Lock()
+	a.currentPwd = pwd
+	a.pwdMu.Unlock()
+	a.pwdLabel.SetText("pwd: " + pwd)
 }
 
-func (a *App) appendTerm(text string) {
+func (a *App) getPwd() string {
+	a.pwdMu.Lock()
+	defer a.pwdMu.Unlock()
+	return a.currentPwd
+}
+
+// filterAndAppend removes pwd-probe lines from terminal output and updates pwd state.
+func (a *App) filterAndAppend(raw string) {
+	lines := strings.Split(raw, "\n")
+	var keep []string
+	for _, line := range lines {
+		if idx := strings.Index(line, pwdMarker); idx >= 0 {
+			pwd := strings.TrimSpace(line[idx+len(pwdMarker):])
+			if pwd != "" {
+				a.ui(func() { a.setPwd(pwd) })
+			}
+		} else {
+			keep = append(keep, line)
+		}
+	}
+	filtered := strings.Join(keep, "\n")
+	if filtered == "" {
+		return
+	}
 	a.termMu.Lock()
 	defer a.termMu.Unlock()
-	a.termBuf.WriteString(text)
-	lines := strings.Split(a.termBuf.String(), "\n")
-	if len(lines) > 1000 {
-		lines = lines[len(lines)-1000:]
+	a.termBuf.WriteString(filtered)
+	allLines := strings.Split(a.termBuf.String(), "\n")
+	if len(allLines) > 2000 {
+		allLines = allLines[len(allLines)-2000:]
 		a.termBuf.Reset()
-		a.termBuf.WriteString(strings.Join(lines, "\n"))
+		a.termBuf.WriteString(strings.Join(allLines, "\n"))
 	}
-	a.term.SetText(a.termBuf.String())
-	a.termScroll.ScrollToBottom()
+	text := a.termBuf.String()
+	a.ui(func() {
+		a.term.SetText(text)
+		a.termScroll.ScrollToBottom()
+	})
 }
 
 func (a *App) connect() {
@@ -224,21 +279,17 @@ func (a *App) connect() {
 				}
 			}
 		}
-
 		if password != "" {
 			authMethods = append(authMethods, ssh.Password(password))
 		}
-
 		if len(authMethods) == 0 {
 			if home, err := os.UserHomeDir(); err == nil {
 				for _, name := range []string{"id_rsa", "id_ed25519", "id_ecdsa"} {
-					key, err := os.ReadFile(filepath.Join(home, ".ssh", name))
-					if err != nil {
-						continue
-					}
-					if signer, err := ssh.ParsePrivateKey(key); err == nil {
-						authMethods = append(authMethods, ssh.PublicKeys(signer))
-						break
+					if key, err := os.ReadFile(filepath.Join(home, ".ssh", name)); err == nil {
+						if signer, err := ssh.ParsePrivateKey(key); err == nil {
+							authMethods = append(authMethods, ssh.PublicKeys(signer))
+							break
+						}
 					}
 				}
 			}
@@ -254,46 +305,30 @@ func (a *App) connect() {
 		addr := net.JoinHostPort(host, port)
 		client, err := ssh.Dial("tcp", addr, cfg)
 		if err != nil {
-			a.ui(func() {
-				a.setStatus(fmt.Sprintf("Erro: %v", err))
-				a.connectBtn.Enable()
-			})
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro: %v", err)); a.connectBtn.Enable() })
 			return
 		}
 
 		session, err := client.NewSession()
 		if err != nil {
 			client.Close()
-			a.ui(func() {
-				a.setStatus(fmt.Sprintf("Erro de sessão: %v", err))
-				a.connectBtn.Enable()
-			})
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro sessão: %v", err)); a.connectBtn.Enable() })
 			return
 		}
 
 		modes := ssh.TerminalModes{
-			ssh.ECHO:          1,
-			ssh.TTY_OP_ISPEED: 14400,
-			ssh.TTY_OP_OSPEED: 14400,
+			ssh.ECHO: 1, ssh.TTY_OP_ISPEED: 14400, ssh.TTY_OP_OSPEED: 14400,
 		}
-		if err := session.RequestPty("xterm-256color", 50, 180, modes); err != nil {
-			session.Close()
-			client.Close()
-			a.ui(func() {
-				a.setStatus(fmt.Sprintf("Erro PTY: %v", err))
-				a.connectBtn.Enable()
-			})
+		if err := session.RequestPty("xterm-256color", 50, 200, modes); err != nil {
+			session.Close(); client.Close()
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro PTY: %v", err)); a.connectBtn.Enable() })
 			return
 		}
 
 		stdin, err := session.StdinPipe()
 		if err != nil {
-			session.Close()
-			client.Close()
-			a.ui(func() {
-				a.setStatus(fmt.Sprintf("Erro stdin: %v", err))
-				a.connectBtn.Enable()
-			})
+			session.Close(); client.Close()
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro stdin: %v", err)); a.connectBtn.Enable() })
 			return
 		}
 
@@ -302,12 +337,8 @@ func (a *App) connect() {
 		session.Stderr = pw
 
 		if err := session.Shell(); err != nil {
-			session.Close()
-			client.Close()
-			a.ui(func() {
-				a.setStatus(fmt.Sprintf("Erro shell: %v", err))
-				a.connectBtn.Enable()
-			})
+			session.Close(); client.Close()
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro shell: %v", err)); a.connectBtn.Enable() })
 			return
 		}
 
@@ -316,6 +347,9 @@ func (a *App) connect() {
 		a.sshClient.session = session
 		a.sshClient.stdin = stdin
 		a.sshClient.mu.Unlock()
+
+		// inject PROMPT_COMMAND to track pwd silently
+		fmt.Fprintf(stdin, "export PROMPT_COMMAND='echo \"%s$(pwd)\"'\n", pwdMarker)
 
 		a.ui(func() {
 			a.setStatus(fmt.Sprintf("Conectado: %s@%s", user, addr))
@@ -329,8 +363,7 @@ func (a *App) connect() {
 			for {
 				n, err := pr.Read(buf)
 				if n > 0 {
-					text := stripANSI(string(buf[:n]))
-					a.ui(func() { a.appendTerm(text) })
+					a.filterAndAppend(stripANSI(string(buf[:n])))
 				}
 				if err != nil {
 					break
@@ -345,6 +378,7 @@ func (a *App) connect() {
 				a.sshClient.session = nil
 				a.sshClient.stdin = nil
 				a.sshClient.mu.Unlock()
+				a.setPwd("~")
 			})
 		}()
 	}()
@@ -365,6 +399,7 @@ func (a *App) disconnect() {
 	a.connectBtn.SetText("Conectar")
 	a.connectBtn.Importance = widget.HighImportance
 	a.setStatus("Desconectado")
+	a.setPwd("~")
 }
 
 func (a *App) sendCommand(cmd string) {
@@ -388,18 +423,15 @@ func (a *App) uploadFile(path string) {
 		return
 	}
 
-	remoteDir := strings.TrimSpace(a.remoteDir.Text)
-	if remoteDir == "" {
-		remoteDir = "~"
-	}
+	remoteDir := a.getPwd()
 
 	go func() {
 		filename := filepath.Base(path)
-		a.ui(func() { a.setStatus(fmt.Sprintf("Enviando %s...", filename)) })
+		a.ui(func() { a.setStatus(fmt.Sprintf("Enviando %s → %s ...", filename, remoteDir)) })
 
 		f, err := os.Open(path)
 		if err != nil {
-			a.ui(func() { a.setStatus(fmt.Sprintf("Erro ao abrir arquivo: %v", err)) })
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro ao abrir: %v", err)) })
 			return
 		}
 		defer f.Close()
@@ -412,7 +444,7 @@ func (a *App) uploadFile(path string) {
 
 		session, err := client.NewSession()
 		if err != nil {
-			a.ui(func() { a.setStatus(fmt.Sprintf("Erro de sessão SCP: %v", err)) })
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro sessão SCP: %v", err)) })
 			return
 		}
 		defer session.Close()
@@ -423,9 +455,7 @@ func (a *App) uploadFile(path string) {
 		}
 
 		errCh := make(chan error, 1)
-		go func() {
-			errCh <- session.Run(fmt.Sprintf("scp -t %s", remoteDir))
-		}()
+		go func() { errCh <- session.Run(fmt.Sprintf("scp -t %s", remoteDir)) }()
 
 		fmt.Fprintf(stdin, "C0644 %d %s\n", info.Size(), filename)
 		io.Copy(stdin, f)
@@ -438,8 +468,14 @@ func (a *App) uploadFile(path string) {
 		}
 
 		a.ui(func() {
-			a.setStatus(fmt.Sprintf("✓ %s enviado para %s", filename, remoteDir))
-			a.appendTerm(fmt.Sprintf("\n[SCP] %s → %s/%s\n", filename, remoteDir, filename))
+			msg := fmt.Sprintf("✓ %s enviado para %s", filename, remoteDir)
+			a.setStatus(msg)
+			a.termMu.Lock()
+			a.termBuf.WriteString(fmt.Sprintf("\n[SCP] %s\n", msg))
+			text := a.termBuf.String()
+			a.termMu.Unlock()
+			a.term.SetText(text)
+			a.termScroll.ScrollToBottom()
 		})
 	}()
 }
@@ -467,10 +503,10 @@ func stripANSI(s string) string {
 	return b.String()
 }
 
+// DropTarget — clicável; DroppedFiles para DnD nativo (funciona no driver desktop do Fyne)
 type DropTarget struct {
 	widget.BaseWidget
-	app     *App
-	hovered bool
+	app *App
 }
 
 func newDropTarget(a *App) *DropTarget {
@@ -481,36 +517,18 @@ func newDropTarget(a *App) *DropTarget {
 
 func (d *DropTarget) CreateRenderer() fyne.WidgetRenderer {
 	rect := canvas.NewRectangle(theme.InputBorderColor())
-	rect.CornerRadius = 8
+	rect.CornerRadius = 6
 	rect.StrokeColor = theme.PrimaryColor()
-	rect.StrokeWidth = 2
+	rect.StrokeWidth = 1
 	rect.FillColor = theme.InputBackgroundColor()
-	rect.SetMinSize(fyne.NewSize(400, 60))
+	rect.SetMinSize(fyne.NewSize(120, 32))
 	return widget.NewSimpleRenderer(rect)
 }
 
 func (d *DropTarget) Dragged(ev *fyne.DragEvent) {}
 func (d *DropTarget) DragEnd()                   {}
-
-func (d *DropTarget) Tapped(*fyne.PointEvent) {
-	dialog.ShowFileOpen(func(uc fyne.URIReadCloser, err error) {
-		if err != nil || uc == nil {
-			return
-		}
-		d.app.uploadFile(uc.URI().Path())
-	}, d.app.win)
-}
-
-func (d *DropTarget) MouseIn(*desktop.MouseEvent) {
-	d.hovered = true
-	d.Refresh()
-}
-
-func (d *DropTarget) MouseOut() {
-	d.hovered = false
-	d.Refresh()
-}
-
+func (d *DropTarget) MouseIn(*desktop.MouseEvent)    {}
+func (d *DropTarget) MouseOut()                      {}
 func (d *DropTarget) MouseMoved(*desktop.MouseEvent) {}
 
 func (d *DropTarget) DroppedFiles(uris []fyne.URI) {
