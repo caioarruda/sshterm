@@ -43,6 +43,7 @@ type App struct {
 	user       *widget.Entry
 	password   *widget.Entry
 	keyPath    *widget.Entry
+	uiQueue    chan func()
 	termBuf    strings.Builder
 	termMu     sync.Mutex
 }
@@ -54,12 +55,35 @@ func main() {
 	myApp := &App{
 		fyneApp:   a,
 		sshClient: &SSHClient{},
+		uiQueue:   make(chan func(), 64),
 	}
 
 	myApp.win = a.NewWindow("SSH Terminal")
 	myApp.win.Resize(fyne.NewSize(1024, 768))
 	myApp.buildUI()
+
+	// drain UI queue via ticker — Fyne runs canvas.Refresh safely from any goroutine,
+	// but widget state changes are safer serialized here
+	go func() {
+		t := time.NewTicker(16 * time.Millisecond)
+		for range t.C {
+			for {
+				select {
+				case fn := <-myApp.uiQueue:
+					fn()
+				default:
+					goto done
+				}
+			}
+		done:
+		}
+	}()
+
 	myApp.win.ShowAndRun()
+}
+
+func (a *App) ui(fn func()) {
+	a.uiQueue <- fn
 }
 
 func (a *App) buildUI() {
@@ -121,8 +145,6 @@ func (a *App) buildUI() {
 		a.input.SetText("")
 	})
 
-	inputRow := container.NewBorder(nil, nil, nil, sendBtn, a.input)
-
 	a.remoteDir = widget.NewEntry()
 	a.remoteDir.SetText("~")
 	a.remoteDir.SetPlaceHolder("diretório remoto destino")
@@ -140,7 +162,7 @@ func (a *App) buildUI() {
 	termPanel := container.NewBorder(
 		nil,
 		container.NewVBox(
-			inputRow,
+			container.NewBorder(nil, nil, nil, sendBtn, a.input),
 			container.NewBorder(nil, nil, widget.NewLabel("Destino SCP:"), nil, a.remoteDir),
 			dropBox,
 			a.statusBar,
@@ -155,19 +177,6 @@ func (a *App) buildUI() {
 	a.win.SetContent(split)
 }
 
-func (a *App) runOnMain(f func()) {
-	done := make(chan struct{})
-	a.fyneApp.Driver().DoFromGoroutine(func() {
-		f()
-		close(done)
-	})
-	<-done
-}
-
-func (a *App) runOnMainAsync(f func()) {
-	a.fyneApp.Driver().DoFromGoroutine(f)
-}
-
 func (a *App) setStatus(msg string) {
 	a.statusBar.SetText(msg)
 }
@@ -176,8 +185,7 @@ func (a *App) appendTerm(text string) {
 	a.termMu.Lock()
 	defer a.termMu.Unlock()
 	a.termBuf.WriteString(text)
-	full := a.termBuf.String()
-	lines := strings.Split(full, "\n")
+	lines := strings.Split(a.termBuf.String(), "\n")
 	if len(lines) > 1000 {
 		lines = lines[len(lines)-1000:]
 		a.termBuf.Reset()
@@ -210,10 +218,8 @@ func (a *App) connect() {
 				home, _ := os.UserHomeDir()
 				keyPath = filepath.Join(home, keyPath[2:])
 			}
-			key, err := os.ReadFile(keyPath)
-			if err == nil {
-				signer, err := ssh.ParsePrivateKey(key)
-				if err == nil {
+			if key, err := os.ReadFile(keyPath); err == nil {
+				if signer, err := ssh.ParsePrivateKey(key); err == nil {
 					authMethods = append(authMethods, ssh.PublicKeys(signer))
 				}
 			}
@@ -230,12 +236,10 @@ func (a *App) connect() {
 					if err != nil {
 						continue
 					}
-					signer, err := ssh.ParsePrivateKey(key)
-					if err != nil {
-						continue
+					if signer, err := ssh.ParsePrivateKey(key); err == nil {
+						authMethods = append(authMethods, ssh.PublicKeys(signer))
+						break
 					}
-					authMethods = append(authMethods, ssh.PublicKeys(signer))
-					break
 				}
 			}
 		}
@@ -250,7 +254,7 @@ func (a *App) connect() {
 		addr := net.JoinHostPort(host, port)
 		client, err := ssh.Dial("tcp", addr, cfg)
 		if err != nil {
-			a.runOnMainAsync(func() {
+			a.ui(func() {
 				a.setStatus(fmt.Sprintf("Erro: %v", err))
 				a.connectBtn.Enable()
 			})
@@ -260,7 +264,7 @@ func (a *App) connect() {
 		session, err := client.NewSession()
 		if err != nil {
 			client.Close()
-			a.runOnMainAsync(func() {
+			a.ui(func() {
 				a.setStatus(fmt.Sprintf("Erro de sessão: %v", err))
 				a.connectBtn.Enable()
 			})
@@ -275,7 +279,7 @@ func (a *App) connect() {
 		if err := session.RequestPty("xterm-256color", 50, 180, modes); err != nil {
 			session.Close()
 			client.Close()
-			a.runOnMainAsync(func() {
+			a.ui(func() {
 				a.setStatus(fmt.Sprintf("Erro PTY: %v", err))
 				a.connectBtn.Enable()
 			})
@@ -286,7 +290,7 @@ func (a *App) connect() {
 		if err != nil {
 			session.Close()
 			client.Close()
-			a.runOnMainAsync(func() {
+			a.ui(func() {
 				a.setStatus(fmt.Sprintf("Erro stdin: %v", err))
 				a.connectBtn.Enable()
 			})
@@ -300,7 +304,7 @@ func (a *App) connect() {
 		if err := session.Shell(); err != nil {
 			session.Close()
 			client.Close()
-			a.runOnMainAsync(func() {
+			a.ui(func() {
 				a.setStatus(fmt.Sprintf("Erro shell: %v", err))
 				a.connectBtn.Enable()
 			})
@@ -313,7 +317,7 @@ func (a *App) connect() {
 		a.sshClient.stdin = stdin
 		a.sshClient.mu.Unlock()
 
-		a.runOnMainAsync(func() {
+		a.ui(func() {
 			a.setStatus(fmt.Sprintf("Conectado: %s@%s", user, addr))
 			a.connectBtn.SetText("Desconectar")
 			a.connectBtn.Importance = widget.DangerImportance
@@ -326,13 +330,13 @@ func (a *App) connect() {
 				n, err := pr.Read(buf)
 				if n > 0 {
 					text := stripANSI(string(buf[:n]))
-					a.runOnMainAsync(func() { a.appendTerm(text) })
+					a.ui(func() { a.appendTerm(text) })
 				}
 				if err != nil {
 					break
 				}
 			}
-			a.runOnMainAsync(func() {
+			a.ui(func() {
 				a.setStatus("Sessão encerrada")
 				a.connectBtn.SetText("Conectar")
 				a.connectBtn.Importance = widget.HighImportance
@@ -391,24 +395,24 @@ func (a *App) uploadFile(path string) {
 
 	go func() {
 		filename := filepath.Base(path)
-		a.runOnMainAsync(func() { a.setStatus(fmt.Sprintf("Enviando %s...", filename)) })
+		a.ui(func() { a.setStatus(fmt.Sprintf("Enviando %s...", filename)) })
 
 		f, err := os.Open(path)
 		if err != nil {
-			a.runOnMainAsync(func() { a.setStatus(fmt.Sprintf("Erro ao abrir arquivo: %v", err)) })
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro ao abrir arquivo: %v", err)) })
 			return
 		}
 		defer f.Close()
 
 		info, err := f.Stat()
 		if err != nil {
-			a.runOnMainAsync(func() { a.setStatus(fmt.Sprintf("Erro stat: %v", err)) })
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro stat: %v", err)) })
 			return
 		}
 
 		session, err := client.NewSession()
 		if err != nil {
-			a.runOnMainAsync(func() { a.setStatus(fmt.Sprintf("Erro de sessão SCP: %v", err)) })
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro de sessão SCP: %v", err)) })
 			return
 		}
 		defer session.Close()
@@ -429,11 +433,11 @@ func (a *App) uploadFile(path string) {
 		stdin.Close()
 
 		if err := <-errCh; err != nil {
-			a.runOnMainAsync(func() { a.setStatus(fmt.Sprintf("Erro SCP: %v", err)) })
+			a.ui(func() { a.setStatus(fmt.Sprintf("Erro SCP: %v", err)) })
 			return
 		}
 
-		a.runOnMainAsync(func() {
+		a.ui(func() {
 			a.setStatus(fmt.Sprintf("✓ %s enviado para %s", filename, remoteDir))
 			a.appendTerm(fmt.Sprintf("\n[SCP] %s → %s/%s\n", filename, remoteDir, filename))
 		})
@@ -509,9 +513,8 @@ func (d *DropTarget) MouseOut() {
 
 func (d *DropTarget) MouseMoved(*desktop.MouseEvent) {}
 
-// desktop.FileDroppable — suportado no driver desktop do Fyne
-func (d *DropTarget) DroppedFiles(paths []fyne.URI) {
-	for _, uri := range paths {
+func (d *DropTarget) DroppedFiles(uris []fyne.URI) {
+	for _, uri := range uris {
 		d.app.uploadFile(uri.Path())
 	}
 }
