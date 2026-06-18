@@ -14,6 +14,19 @@
         <span class="sidebar-title">SSH Terminal</span>
       </div>
 
+      <!-- Saved hosts -->
+      <div class="hosts-section">
+        <div class="section-label">Hosts salvos</div>
+        <div id="hostList" class="host-list"></div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Connection form -->
+      <div class="form-group">
+        <label>Nome (opcional)</label>
+        <input id="hostName" type="text" placeholder="ex: servidor prod" />
+      </div>
       <div class="form-group">
         <label>Host</label>
         <input id="host" type="text" placeholder="hostname ou IP" />
@@ -37,9 +50,10 @@
         <input id="keypath" type="text" placeholder="~/.ssh/id_rsa" />
       </div>
 
-      <button id="connectBtn" class="btn btn-primary" onclick="handleConnect()">
-        Conectar
-      </button>
+      <div class="btn-row">
+        <button id="connectBtn" class="btn btn-primary" onclick="handleConnect()">Conectar</button>
+        <button class="btn btn-icon" onclick="handleSaveHost()" title="Salvar host">💾</button>
+      </div>
 
       <div class="divider"></div>
 
@@ -48,9 +62,7 @@
         <button class="btn btn-secondary" onclick="handleUploadFolder()">📁 Pasta</button>
       </div>
 
-      <div class="drop-hint">
-        ou arraste arquivos para o terminal
-      </div>
+      <div class="drop-hint">ou arraste arquivos para o terminal</div>
 
       <div class="divider"></div>
 

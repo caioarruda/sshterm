@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -26,8 +27,78 @@ type App struct {
 	currentPwd string
 }
 
+// Host represents a saved SSH host
+type Host struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Host     string `json:"host"`
+	Port     string `json:"port"`
+	User     string `json:"user"`
+	KeyPath  string `json:"keyPath"`
+}
+
 func NewApp() *App {
 	return &App{currentPwd: "~"}
+}
+
+func hostsFilePath() string {
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, ".config", "sshterm")
+	os.MkdirAll(dir, 0700)
+	return filepath.Join(dir, "hosts.json")
+}
+
+// GetHosts returns all saved hosts
+func (a *App) GetHosts() []Host {
+	data, err := os.ReadFile(hostsFilePath())
+	if err != nil {
+		return []Host{}
+	}
+	var hosts []Host
+	if err := json.Unmarshal(data, &hosts); err != nil {
+		return []Host{}
+	}
+	return hosts
+}
+
+// SaveHost saves or updates a host (matched by ID)
+func (a *App) SaveHost(host Host) error {
+	hosts := a.GetHosts()
+	if host.ID == "" {
+		host.ID = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	found := false
+	for i, h := range hosts {
+		if h.ID == host.ID {
+			hosts[i] = host
+			found = true
+			break
+		}
+	}
+	if !found {
+		hosts = append(hosts, host)
+	}
+	data, err := json.MarshalIndent(hosts, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(hostsFilePath(), data, 0600)
+}
+
+// DeleteHost removes a host by ID
+func (a *App) DeleteHost(id string) error {
+	hosts := a.GetHosts()
+	filtered := hosts[:0]
+	for _, h := range hosts {
+		if h.ID != id {
+			filtered = append(filtered, h)
+		}
+	}
+	data, err := json.MarshalIndent(filtered, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(hostsFilePath(), data, 0600)
 }
 
 func (a *App) startup(ctx context.Context) {

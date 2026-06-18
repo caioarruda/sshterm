@@ -24,21 +24,18 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		BackgroundColour: &options.RGBA{R: 13, G: 17, B: 23, A: 255},
-		OnStartup:        app.startup,
-		OnShutdown:       app.shutdown,
+		BackgroundColour:         &options.RGBA{R: 13, G: 17, B: 23, A: 255},
+		OnStartup:                app.startup,
+		OnShutdown:               app.shutdown,
+		EnableDefaultContextMenu: false,
 		Bind: []interface{}{
 			app,
 		},
-		// Native OS drag-and-drop — Wails intercepts WM_DROPFILES
-		// and calls OnFileDrop with real file paths
-		EnableFileDrop:        true,
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
 			DisableWindowIcon:    false,
 		},
-		EnableDefaultContextMenu: false,
 	})
 
 	if err != nil {

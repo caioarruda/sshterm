@@ -12,6 +12,9 @@ import {
   UploadPaths,
   OpenFileDialog,
   OpenFolderDialog,
+  GetHosts,
+  SaveHost,
+  DeleteHost,
 } from '../wailsjs/go/main/App'
 import { EventsOn } from '../wailsjs/runtime/runtime'
 
@@ -173,29 +176,113 @@ window.toggleSidebar = function () {
   setTimeout(() => { fitAddon.fit() }, 220)
 }
 
-// Drag and drop — Wails native file drop via EnableFileDrop option
-// Wails intercepts WM_DROPFILES at OS level and emits 'wails:filedrop'
-// with real Windows file paths (no file.path workaround needed)
+// Drag and drop — WebView2 exposes file.path for files dragged from Explorer
 const dropHint = document.querySelector('.drop-hint')
+const termContainer = document.getElementById('termContainer')
 
-window.addEventListener('dragover', e => {
+termContainer.addEventListener('dragenter', e => {
   e.preventDefault()
   dropHint.classList.add('dragover')
 })
-window.addEventListener('dragleave', e => {
-  if (e.relatedTarget === null) dropHint.classList.remove('dragover')
+termContainer.addEventListener('dragover', e => {
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'copy'
 })
-
-// Wails emits this event with { x, y, paths } from native WM_DROPFILES
-window.addEventListener('wails:filedrop', e => {
+termContainer.addEventListener('dragleave', e => {
+  if (!termContainer.contains(e.relatedTarget)) {
+    dropHint.classList.remove('dragover')
+  }
+})
+termContainer.addEventListener('drop', e => {
+  e.preventDefault()
   dropHint.classList.remove('dragover')
-  const paths = e.detail?.paths
-  if (paths && paths.length > 0) {
+  const files = Array.from(e.dataTransfer.files)
+  if (files.length === 0) return
+  // WebView2 (Edge-based) exposes file.path for local files
+  const paths = files.map(f => f.path || f.name).filter(p => p && p.includes('\\') || p.includes('/'))
+  if (paths.length > 0) {
     UploadPaths(paths)
+  } else {
+    showToast('Não foi possível obter o caminho dos arquivos', 'error')
   }
 })
 
-// Status bar
+// ---- Host management ----
+let activeHostId = null
+
+async function loadHosts() {
+  const hosts = await GetHosts()
+  const list = document.getElementById('hostList')
+  list.innerHTML = ''
+  if (!hosts || hosts.length === 0) {
+    list.innerHTML = '<div style="font-size:11px;color:var(--text-muted);padding:4px 8px;">Nenhum host salvo</div>'
+    return
+  }
+  hosts.forEach(h => {
+    const item = document.createElement('button')
+    item.className = 'host-item' + (h.id === activeHostId ? ' active' : '')
+    item.innerHTML = `
+      <span class="host-item-name">${h.name || h.host}</span>
+      <span class="host-item-addr">${h.user}@${h.host}:${h.port}</span>
+      <button class="host-delete" data-id="${h.id}" title="Remover">✕</button>
+    `
+    item.addEventListener('click', e => {
+      if (e.target.classList.contains('host-delete')) return
+      fillForm(h)
+      activeHostId = h.id
+      loadHosts()
+    })
+    item.querySelector('.host-delete').addEventListener('click', async e => {
+      e.stopPropagation()
+      await DeleteHost(h.id)
+      if (activeHostId === h.id) activeHostId = null
+      loadHosts()
+    })
+    list.appendChild(item)
+  })
+}
+
+function fillForm(h) {
+  document.getElementById('hostName').value = h.name || ''
+  document.getElementById('host').value = h.host || ''
+  document.getElementById('port').value = h.port || '22'
+  document.getElementById('username').value = h.user || ''
+  document.getElementById('password').value = ''
+  document.getElementById('keypath').value = h.keyPath || ''
+}
+
+function getFormHost() {
+  return {
+    id: activeHostId || '',
+    name: document.getElementById('hostName').value.trim(),
+    host: document.getElementById('host').value.trim(),
+    port: document.getElementById('port').value.trim() || '22',
+    user: document.getElementById('username').value.trim(),
+    keyPath: document.getElementById('keypath').value.trim(),
+  }
+}
+
+window.handleSaveHost = async function () {
+  const h = getFormHost()
+  if (!h.host || !h.user) {
+    showToast('Preencha host e usuário antes de salvar', 'error')
+    return
+  }
+  if (!h.name) h.name = `${h.user}@${h.host}`
+  await SaveHost(h)
+  if (!activeHostId) {
+    // get the newly saved host id
+    const hosts = await GetHosts()
+    const saved = hosts.find(x => x.host === h.host && x.user === h.user)
+    if (saved) activeHostId = saved.id
+  }
+  loadHosts()
+  showToast('Host salvo', 'success')
+}
+
+loadHosts()
+
+// ---- Status bar ----
 function setStatus(msg, connected) {
   const bar = document.getElementById('statusBar')
   const dot = document.createElement('span')
