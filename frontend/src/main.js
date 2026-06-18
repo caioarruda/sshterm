@@ -15,6 +15,7 @@ import {
   GetHosts,
   SaveHost,
   DeleteHost,
+  ClipboardGetText,
 } from '../wailsjs/go/main/App'
 import { EventsOn, OnFileDrop } from '../wailsjs/runtime/runtime'
 
@@ -68,6 +69,33 @@ ro.observe(document.getElementById('terminal'))
 
 // Keyboard input → SSH
 term.onData(data => SendInput(data))
+
+// Paste helper — tries browser clipboard first, falls back to Go runtime
+async function pasteFromClipboard() {
+  try {
+    const text = await navigator.clipboard.readText()
+    if (text) { SendInput(text); return }
+  } catch (_) {}
+  // Fallback: Wails Go clipboard (works when browser clipboard API is blocked)
+  const text = await ClipboardGetText()
+  if (text) SendInput(text)
+}
+
+// Ctrl+V paste
+term.attachCustomKeyEventHandler(e => {
+  if (e.type === 'keydown' && e.ctrlKey && e.key === 'v') {
+    pasteFromClipboard()
+    return false
+  }
+  // Ctrl+C should still send SIGINT, not copy
+  return true
+})
+
+// Right-click paste
+document.getElementById('terminal').addEventListener('contextmenu', e => {
+  e.preventDefault()
+  pasteFromClipboard()
+})
 
 // SSH output → terminal
 EventsOn('terminal:data', data => term.write(data))

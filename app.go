@@ -116,6 +116,12 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 }
 
+// ClipboardGetText returns text from clipboard (fallback for WebView2 clipboard restrictions)
+func (a *App) ClipboardGetText() string {
+	text, _ := runtime.ClipboardGetText(a.ctx)
+	return text
+}
+
 // Connect establishes SSH connection and starts shell
 func (a *App) Connect(host, port, user, password, keyPath string) error {
 	a.mu.Lock()
