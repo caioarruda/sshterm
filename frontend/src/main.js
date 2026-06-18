@@ -16,6 +16,7 @@ import {
   SaveHost,
   DeleteHost,
   ClipboardGetText,
+  ClipboardSetText,
   DownloadFile,
   GetPwd,
 } from '../wailsjs/go/main/App'
@@ -52,6 +53,7 @@ const term = new Terminal({
   cursorStyle: 'block',
   scrollback: 5000,
   allowTransparency: false,
+  copyOnSelect: true,
 })
 
 const fitAddon = new FitAddon()
@@ -71,6 +73,14 @@ ro.observe(document.getElementById('terminal'))
 
 // Keyboard input → SSH
 term.onData(data => SendInput(data))
+
+// Copy on select — sync to Windows clipboard via Go
+term.onSelectionChange(() => {
+  const sel = term.getSelection()
+  if (!sel) return
+  // Try browser clipboard first, fall back to Go runtime
+  navigator.clipboard.writeText(sel).catch(() => ClipboardSetText(sel))
+})
 
 // Paste helper — tries browser clipboard first, falls back to Go runtime
 async function pasteFromClipboard() {

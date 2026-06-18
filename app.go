@@ -116,6 +116,11 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 }
 
+// ClipboardSetText sets text to clipboard
+func (a *App) ClipboardSetText(text string) {
+	runtime.ClipboardSetText(a.ctx, text)
+}
+
 // ClipboardGetText returns text from clipboard (fallback for WebView2 clipboard restrictions)
 func (a *App) ClipboardGetText() string {
 	text, _ := runtime.ClipboardGetText(a.ctx)
