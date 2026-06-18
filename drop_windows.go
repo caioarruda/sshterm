@@ -10,13 +10,13 @@ import (
 )
 
 var (
-	shell32         = windows.NewLazySystemDLL("shell32.dll")
-	user32dll       = windows.NewLazySystemDLL("user32.dll")
-	procDragAccept  = shell32.NewProc("DragAcceptFiles")
-	procDragQuery   = shell32.NewProc("DragQueryFileW")
-	procDragFinish  = shell32.NewProc("DragFinish")
-	procDefSubclass = user32dll.NewProc("DefSubclassProc")
-	procSetSubclass = user32dll.NewProc("SetWindowSubclass")
+	shell32        = windows.NewLazySystemDLL("shell32.dll")
+	comctl32       = windows.NewLazySystemDLL("comctl32.dll")
+	procDragAccept = shell32.NewProc("DragAcceptFiles")
+	procDragQuery  = shell32.NewProc("DragQueryFileW")
+	procDragFinish = shell32.NewProc("DragFinish")
+	procSetSubclass = comctl32.NewProc("SetWindowSubclass")
+	procDefSubclass = comctl32.NewProc("DefSubclassProc")
 )
 
 const wmDropFiles = 0x0233

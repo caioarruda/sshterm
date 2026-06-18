@@ -1,7 +1,5 @@
 package main
 
-const pwdMarker = "__SSHTERM_PWD__:"
-
 import (
 	"fmt"
 	"io"
@@ -684,7 +682,7 @@ func (a *App) connect() {
 		a.sshStdin = stdin
 		a.sshMu.Unlock()
 
-		fmt.Fprintf(stdin, "export PROMPT_COMMAND='echo %s$(pwd)'\n", pwdMarker)
+		go a.trackPwd(client)
 
 		// read SSH output, feed into TermBuffer, refresh widget
 		go func() {
@@ -715,7 +713,7 @@ func (a *App) connect() {
 					if !ok {
 						goto done
 					}
-					a.processOutput(data)
+					a.termWidget.buf.Write(data)
 					dirty = true
 				case <-tick.C:
 					if dirty {
@@ -745,28 +743,28 @@ func (a *App) connect() {
 	}()
 }
 
-func (a *App) processOutput(data []byte) {
-	// filter pwdMarker lines out of terminal output, update pwd label
-	s := string(data)
-	if !strings.Contains(s, pwdMarker) {
-		a.termWidget.buf.Write(data)
-		return
-	}
-	lines := strings.Split(s, "\n")
-	var keep []string
-	for _, line := range lines {
-		if idx := strings.Index(line, pwdMarker); idx >= 0 {
-			pwd := strings.TrimSpace(line[idx+len(pwdMarker):])
-			if pwd != "" {
-				a.setPwd(pwd)
-			}
-		} else {
-			keep = append(keep, line)
+func (a *App) trackPwd(client *ssh.Client) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		a.sshMu.Lock()
+		alive := a.sshClient == client
+		a.sshMu.Unlock()
+		if !alive {
+			return
 		}
-	}
-	filtered := strings.Join(keep, "\n")
-	if filtered != "" {
-		a.termWidget.buf.Write([]byte(filtered))
+		sess, err := client.NewSession()
+		if err != nil {
+			return
+		}
+		out, err := sess.Output("pwd")
+		sess.Close()
+		if err != nil {
+			continue
+		}
+		if pwd := strings.TrimSpace(string(out)); pwd != "" {
+			a.setPwd(pwd)
+		}
 	}
 }
 
