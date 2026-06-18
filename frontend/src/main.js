@@ -16,6 +16,8 @@ import {
   SaveHost,
   DeleteHost,
   ClipboardGetText,
+  DownloadFile,
+  GetPwd,
 } from '../wailsjs/go/main/App'
 import { EventsOn, OnFileDrop } from '../wailsjs/runtime/runtime'
 
@@ -72,15 +74,20 @@ term.onData(data => SendInput(data))
 
 // Paste helper — tries browser clipboard first, falls back to Go runtime
 async function pasteFromClipboard() {
+  let text = ''
   try {
-    const text = await navigator.clipboard.readText()
-    if (text) { SendInput(text); return }
+    text = await navigator.clipboard.readText()
   } catch (_) {}
-  // Fallback: Wails Go clipboard (works when browser clipboard API is blocked)
-  const text = await ClipboardGetText()
-  if (text) SendInput(text)
+  if (!text) {
+    text = await ClipboardGetText()
+  }
+  if (!text) return
+  // Join shell line continuations (backslash+newline) so multi-line commands paste as one
+  text = text.replace(/\\
+?
+[ 	]*/g, ' ').replace(/ {2,}/g, ' ').trim()
+  SendInput(text)
 }
-
 // Ctrl+V paste
 term.attachCustomKeyEventHandler(e => {
   if (e.type === 'keydown' && e.ctrlKey && e.key === 'v') {
@@ -308,6 +315,31 @@ window.handleSaveHost = async function () {
 }
 
 loadHosts()
+
+EventsOn('download:progress', msg => setStatus(msg, true))
+EventsOn('download:done', msg => {
+  setStatus(msg, true)
+  showToast(msg, 'success')
+})
+
+window.handleDownload = async function () {
+  const connected = await IsConnected()
+  if (!connected) {
+    showToast('Não conectado', 'error')
+    return
+  }
+  // Prompt for remote file path, pre-fill with current pwd
+  const pwd = await GetPwd()
+  const remotePath = window.prompt('Caminho do arquivo no servidor:', pwd + '/')
+  if (!remotePath || remotePath.endsWith('/')) {
+    return
+  }
+  try {
+    await DownloadFile(remotePath)
+  } catch (err) {
+    showToast(`Erro ao baixar: ${err}`, 'error')
+  }
+}
 
 // ---- Status bar ----
 function setStatus(msg, connected) {
