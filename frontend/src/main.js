@@ -16,7 +16,7 @@ import {
   SaveHost,
   DeleteHost,
 } from '../wailsjs/go/main/App'
-import { EventsOn } from '../wailsjs/runtime/runtime'
+import { EventsOn, OnFileDrop } from '../wailsjs/runtime/runtime'
 
 // Terminal setup
 const term = new Terminal({
@@ -112,8 +112,19 @@ window.handleConnect = async function () {
   const pass = document.getElementById('password').value
   const key = document.getElementById('keypath').value.trim()
 
-  if (!host || !user) {
-    showToast('Host e usuário são obrigatórios', 'error')
+  if (!host) {
+    showToast('Host é obrigatório', 'error')
+    document.getElementById('host').focus()
+    return
+  }
+  if (!user) {
+    showToast('Usuário é obrigatório', 'error')
+    document.getElementById('username').focus()
+    return
+  }
+  // sanity check — host should not look like a username
+  if (!host.includes('.') && !host.includes(':') && host === user) {
+    showToast('Host e usuário parecem iguais — verifique os campos', 'error')
     return
   }
 
@@ -176,35 +187,23 @@ window.toggleSidebar = function () {
   setTimeout(() => { fitAddon.fit() }, 220)
 }
 
-// Drag and drop — WebView2 exposes file.path for files dragged from Explorer
+// Drag and drop via Wails native OnFileDrop
+// DisableWebViewDrop:true prevents the webview from handling drops itself
+// CSSDropProperty "--wails-drop-target":"drop" marks the drop zone
 const dropHint = document.querySelector('.drop-hint')
-const termContainer = document.getElementById('termContainer')
 
-termContainer.addEventListener('dragenter', e => {
-  e.preventDefault()
-  dropHint.classList.add('dragover')
-})
-termContainer.addEventListener('dragover', e => {
-  e.preventDefault()
-  e.dataTransfer.dropEffect = 'copy'
-})
-termContainer.addEventListener('dragleave', e => {
-  if (!termContainer.contains(e.relatedTarget)) {
-    dropHint.classList.remove('dragover')
-  }
-})
-termContainer.addEventListener('drop', e => {
-  e.preventDefault()
+OnFileDrop((x, y, paths) => {
   dropHint.classList.remove('dragover')
-  const files = Array.from(e.dataTransfer.files)
-  if (files.length === 0) return
-  // WebView2 (Edge-based) exposes file.path for local files
-  const paths = files.map(f => f.path || f.name).filter(p => p && p.includes('\\') || p.includes('/'))
-  if (paths.length > 0) {
+  if (paths && paths.length > 0) {
     UploadPaths(paths)
-  } else {
-    showToast('Não foi possível obter o caminho dos arquivos', 'error')
   }
+}, true)
+
+// Visual feedback during drag — Wails adds 'wails-drop-target-active' class automatically
+// but we also listen to dragover/dragleave for the hint text
+window.addEventListener('dragover', () => dropHint.classList.add('dragover'))
+window.addEventListener('dragleave', e => {
+  if (e.relatedTarget === null) dropHint.classList.remove('dragover')
 })
 
 // ---- Host management ----

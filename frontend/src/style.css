@@ -133,6 +133,7 @@ input:focus { border-color: var(--accent); }
   flex-direction: column;
   overflow: hidden;
   position: relative;
+  --wails-drop-target: drop;
 }
 
 #terminal {
