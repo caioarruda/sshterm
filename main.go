@@ -1,6 +1,5 @@
 package main
 
-const pwdMarker = "__SSHTERM_PWD__:"
 
 import (
 	"fmt"
@@ -22,6 +21,7 @@ import (
 	sqDialog "github.com/sqweek/dialog"
 	"golang.org/x/crypto/ssh"
 )
+const pwdMarker = "__SSHTERM_PWD__:"
 
 // TermBuffer holds a grid of cells and processes VT100/xterm sequences.
 type cell struct {
