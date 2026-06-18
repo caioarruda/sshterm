@@ -1,62 +1,32 @@
-name: Release
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 
-on:
-  push:
-    tags:
-      - 'v*'
+# Test binary, built with `go test -c`
+*.test
 
-permissions:
-  contents: write
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
 
-jobs:
-  build-windows:
-    name: Build Windows
-    runs-on: ubuntu-latest
+# Dependency directories (remove the comment below to include it)
+# vendor/
 
-    steps:
-      - uses: actions/checkout@v4
+# Go workspace file
+go.work
+go.work.sum
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-          cache: true
+# env file
+.env
 
-      - name: Install cross-compile deps
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc-mingw-w64-x86-64 \
-            libz-mingw-w64-dev \
-            zip
-
-      - name: Tidy modules
-        run: go mod tidy
-
-      - name: Download modules
-        run: go mod download
-
-      - name: Build Windows exe
-        env:
-          GOOS: windows
-          GOARCH: amd64
-          CGO_ENABLED: 1
-          CC: x86_64-w64-mingw32-gcc
-          CGO_LDFLAGS: "-static -lgdi32 -lopengl32 -lwinmm"
-        run: |
-          go build \
-            -ldflags="-H windowsgui -s -w" \
-            -o sshterm.exe \
-            .
-          zip sshterm-windows-amd64.zip sshterm.exe
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "sshterm ${{ github.ref_name }}"
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
-          generate_release_notes: true
-          files: |
-            sshterm-windows-amd64.zip
+# Editor/IDE
+# .idea/
+# .vscode/
