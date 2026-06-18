@@ -107,7 +107,7 @@ jobs:
         run: npm install
 
       - name: Build
-        run: wails build -platform linux/amd64 -ldflags "-s -w"
+        run: wails build -platform linux/amd64 -ldflags "-s -w" -tags webkit2_41
 
       - name: Zip
         run: |
