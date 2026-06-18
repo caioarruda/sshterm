@@ -1,7 +1,10 @@
-//go:build !windows
+module sshterm
 
-package main
+go 1.22
 
-// RegisterDropTarget is a no-op on non-Windows platforms.
-// Fyne's DroppedFiles interface handles DnD on Linux/macOS.
-func RegisterDropTarget(hwnd uintptr, a *App) {}
+require (
+	fyne.io/fyne/v2 v2.5.2
+	github.com/sqweek/dialog v0.0.0-20240226140203-065105509627
+	golang.org/x/crypto v0.27.0
+	golang.org/x/sys v0.25.0
+)
