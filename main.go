@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"fmt"
 	"io"
@@ -21,6 +20,7 @@ import (
 	sqDialog "github.com/sqweek/dialog"
 	"golang.org/x/crypto/ssh"
 )
+
 const pwdMarker = "__SSHTERM_PWD__:"
 
 // TermBuffer holds a grid of cells and processes VT100/xterm sequences.
@@ -456,6 +456,7 @@ type App struct {
 	pwdMu      sync.Mutex
 	split      *container.Split
 	sideVisible bool
+	toggleBtn   *widget.Button
 }
 
 const (
@@ -561,22 +562,25 @@ func (a *App) buildUI() {
 	a.termWidget = newTermWidget(a, termCols, termRows)
 	termScroll := container.NewScroll(a.termWidget)
 
-	toggleBtn := widget.NewButton("◀", func() {
+	a.toggleBtn = widget.NewButton("◀", func() {
 		a.toggleSidebar()
 	})
-	toggleBtn.Importance = widget.LowImportance
+	a.toggleBtn.Importance = widget.LowImportance
 
+	// toggleBtn sits outside the split so it's always visible
 	termPanel := container.NewBorder(
 		nil,
 		a.statusBar,
-		toggleBtn, nil,
+		nil, nil,
 		termScroll,
 	)
 
 	a.sideVisible = true
 	a.split = container.NewHSplit(sidePanel, termPanel)
 	a.split.SetOffset(0.22)
-	a.win.SetContent(a.split)
+
+	// outer layout: [toggleBtn | split]
+	a.win.SetContent(container.NewBorder(nil, nil, a.toggleBtn, nil, a.split))
 	a.win.Canvas().Focus(a.termWidget)
 }
 
@@ -584,9 +588,11 @@ func (a *App) toggleSidebar() {
 	if a.sideVisible {
 		a.split.SetOffset(0)
 		a.sideVisible = false
+		a.toggleBtn.SetText("▶")
 	} else {
 		a.split.SetOffset(0.22)
 		a.sideVisible = true
+		a.toggleBtn.SetText("◀")
 	}
 }
 
@@ -760,6 +766,10 @@ func (a *App) connect() {
 		a.connectBtn.Importance = widget.DangerImportance
 		a.connectBtn.Enable()
 		a.win.Canvas().Focus(a.termWidget)
+		// auto-collapse sidebar after connecting
+		if a.sideVisible {
+			a.toggleSidebar()
+		}
 	}()
 }
 
