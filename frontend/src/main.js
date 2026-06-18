@@ -173,22 +173,24 @@ window.toggleSidebar = function () {
   setTimeout(() => { fitAddon.fit() }, 220)
 }
 
-// Drag and drop files onto terminal
-const termEl = document.getElementById('termContainer')
+// Drag and drop — Wails native file drop via EnableFileDrop option
+// Wails intercepts WM_DROPFILES at OS level and emits 'wails:filedrop'
+// with real Windows file paths (no file.path workaround needed)
 const dropHint = document.querySelector('.drop-hint')
 
-termEl.addEventListener('dragover', e => {
+window.addEventListener('dragover', e => {
   e.preventDefault()
   dropHint.classList.add('dragover')
 })
-termEl.addEventListener('dragleave', () => dropHint.classList.remove('dragover'))
-termEl.addEventListener('drop', async e => {
-  e.preventDefault()
+window.addEventListener('dragleave', e => {
+  if (e.relatedTarget === null) dropHint.classList.remove('dragover')
+})
+
+// Wails emits this event with { x, y, paths } from native WM_DROPFILES
+window.addEventListener('wails:filedrop', e => {
   dropHint.classList.remove('dragover')
-  const files = Array.from(e.dataTransfer.files)
-  if (files.length === 0) return
-  const paths = files.map(f => f.path).filter(Boolean)
-  if (paths.length > 0) {
+  const paths = e.detail?.paths
+  if (paths && paths.length > 0) {
     UploadPaths(paths)
   }
 })

@@ -15,6 +15,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+const pwdMarker = "__SSHTERM_PWD__:"
+
 type App struct {
 	ctx        context.Context
 	sshClient  *ssh.Client
@@ -136,14 +138,16 @@ func (a *App) Connect(host, port, user, password, keyPath string) error {
 	a.sshStdin = stdin
 	a.mu.Unlock()
 
-	// Stream output to frontend
+	// Inject PROMPT_COMMAND to track pwd in real-time
+	fmt.Fprintf(stdin, "export PROMPT_COMMAND='echo %s$(pwd)'\n", pwdMarker)
+
+	// Stream output to frontend, filtering pwd markers
 	go func() {
 		buf := make([]byte, 4096)
 		for {
 			n, err := pr.Read(buf)
 			if n > 0 {
-				data := string(buf[:n])
-				runtime.EventsEmit(a.ctx, "terminal:data", data)
+				a.processOutput(string(buf[:n]))
 			}
 			if err != nil {
 				break
@@ -157,10 +161,33 @@ func (a *App) Connect(host, port, user, password, keyPath string) error {
 		a.mu.Unlock()
 	}()
 
-	// Track pwd via side channel
-	go a.trackPwd(client)
-
 	return nil
+}
+
+func (a *App) processOutput(raw string) {
+	if !strings.Contains(raw, pwdMarker) {
+		runtime.EventsEmit(a.ctx, "terminal:data", raw)
+		return
+	}
+	lines := strings.Split(raw, "\n")
+	var keep []string
+	for _, line := range lines {
+		if idx := strings.Index(line, pwdMarker); idx >= 0 {
+			pwd := strings.TrimSpace(line[idx+len(pwdMarker):])
+			if pwd != "" {
+				a.mu.Lock()
+				a.currentPwd = pwd
+				a.mu.Unlock()
+				runtime.EventsEmit(a.ctx, "terminal:pwd", pwd)
+			}
+		} else {
+			keep = append(keep, line)
+		}
+	}
+	filtered := strings.Join(keep, "\n")
+	if filtered != "" {
+		runtime.EventsEmit(a.ctx, "terminal:data", filtered)
+	}
 }
 
 // SendInput sends raw bytes to SSH stdin
@@ -212,34 +239,6 @@ func (a *App) GetPwd() string {
 	return a.currentPwd
 }
 
-func (a *App) trackPwd(client *ssh.Client) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		a.mu.Lock()
-		alive := a.sshClient == client
-		a.mu.Unlock()
-		if !alive {
-			return
-		}
-		sess, err := client.NewSession()
-		if err != nil {
-			return
-		}
-		out, err := sess.Output("pwd")
-		sess.Close()
-		if err != nil {
-			continue
-		}
-		pwd := strings.TrimSpace(string(out))
-		if pwd != "" {
-			a.mu.Lock()
-			a.currentPwd = pwd
-			a.mu.Unlock()
-			runtime.EventsEmit(a.ctx, "terminal:pwd", pwd)
-		}
-	}
-}
 
 // UploadFile sends a single file via SCP to current pwd
 func (a *App) UploadFile(localPath string) error {
@@ -354,6 +353,13 @@ func (a *App) OpenFolderDialog() string {
 		return ""
 	}
 	return path
+}
+
+// DragDropFiles is called by the frontend with file paths from a drop event.
+// On WebView2, file.path is not available — instead we use the Wails
+// OnFileDrop option which passes paths directly from the OS drag event.
+func (a *App) DragDropFiles(x, y float64, paths []string) {
+	a.UploadPaths(paths)
 }
 
 // UploadPaths uploads multiple paths (files or folders)

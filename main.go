@@ -30,6 +30,9 @@ func main() {
 		Bind: []interface{}{
 			app,
 		},
+		// Native OS drag-and-drop — Wails intercepts WM_DROPFILES
+		// and calls OnFileDrop with real file paths
+		EnableFileDrop:        true,
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,
