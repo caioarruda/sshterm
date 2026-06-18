@@ -2,6 +2,6 @@
 
 package main
 
-import "fyne.io/fyne/v2"
+fyneterm "fyne.io/x/terminal"
 
 func GetHWND(win fyne.Window) uintptr { return 0 }
