@@ -448,3 +448,161 @@ func (a *App) UploadPaths(paths []string) {
 	}
 	runtime.EventsEmit(a.ctx, "upload:complete", nil)
 }
+
+// DownloadFile downloads a remote file to a local destination chosen by the user.
+// remotePath is the absolute path on the server.
+func (a *App) DownloadFile(remotePath string) error {
+	a.mu.Lock()
+	client := a.sshClient
+	a.mu.Unlock()
+	if client == nil {
+		return fmt.Errorf("não conectado")
+	}
+
+	filename := filepath.Base(remotePath)
+
+	// Ask user where to save
+	localPath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Salvar arquivo",
+		DefaultFilename: filename,
+	})
+	if err != nil || localPath == "" {
+		return nil // cancelled
+	}
+
+	runtime.EventsEmit(a.ctx, "download:progress", fmt.Sprintf("Baixando %s...", filename))
+
+	session, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	scpStdout, err := session.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	scpStdin, err := session.StdinPipe()
+	if err != nil {
+		return err
+	}
+
+	if err := session.Start(fmt.Sprintf("scp -f %q", remotePath)); err != nil {
+		return err
+	}
+
+	// SCP source protocol
+	// Send ready signal
+	fmt.Fprint(scpStdin, "\x00")
+
+	// Read file header: "Cperms size filename\n"
+	var mode string
+	var size int64
+	var remoteFilename string
+	buf := make([]byte, 1)
+	var header strings.Builder
+	for {
+		n, err := scpStdout.Read(buf)
+		if n > 0 {
+			if buf[0] == '\n' {
+				break
+			}
+			header.WriteByte(buf[0])
+		}
+		if err != nil {
+			break
+		}
+	}
+	fmt.Sscanf(header.String(), "C%s %d %s", &mode, &size, &remoteFilename)
+	_ = mode
+
+	// Send ready for file data
+	fmt.Fprint(scpStdin, "\x00")
+
+	// Create local file and receive data
+	localFile, err := os.Create(localPath)
+	if err != nil {
+		return err
+	}
+	defer localFile.Close()
+
+	if _, err := io.CopyN(localFile, scpStdout, size); err != nil {
+		return err
+	}
+
+	// Read trailing null byte
+	scpStdout.Read(buf)
+	// Send final ack
+	fmt.Fprint(scpStdin, "\x00")
+	scpStdin.Close()
+
+	session.Wait()
+
+	runtime.EventsEmit(a.ctx, "download:done", fmt.Sprintf("✓ %s salvo em %s", filename, localPath))
+	return nil
+}
+
+// ListRemoteDir lists files in the current remote directory
+func (a *App) ListRemoteDir(dir string) ([]RemoteFile, error) {
+	a.mu.Lock()
+	client := a.sshClient
+	a.mu.Unlock()
+	if client == nil {
+		return nil, fmt.Errorf("não conectado")
+	}
+
+	session, err := client.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+
+	out, err := session.Output(fmt.Sprintf("ls -la --time-style=+%%Y-%%m-%%d %q 2>/dev/null | tail -n +2", dir))
+	if err != nil {
+		return nil, err
+	}
+
+	var files []RemoteFile
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		f := parseLS(line)
+		if f != nil {
+			files = append(files, *f)
+		}
+	}
+	return files, nil
+}
+
+// RemoteFile represents a file in a remote directory listing
+type RemoteFile struct {
+	Name    string `json:"name"`
+	IsDir   bool   `json:"isDir"`
+	Size    int64  `json:"size"`
+	ModTime string `json:"modTime"`
+	Perms   string `json:"perms"`
+}
+
+func parseLS(line string) *RemoteFile {
+	fields := strings.Fields(line)
+	if len(fields) < 9 {
+		return nil
+	}
+	perms := fields[0]
+	sizeStr := fields[4]
+	modTime := fields[5]
+	name := strings.Join(fields[8:], " ")
+	if name == "." || name == ".." {
+		return nil
+	}
+	var size int64
+	fmt.Sscanf(sizeStr, "%d", &size)
+	return &RemoteFile{
+		Name:    name,
+		IsDir:   perms[0] == 'd',
+		Size:    size,
+		ModTime: modTime,
+		Perms:   perms,
+	}
+}
