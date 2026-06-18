@@ -82,10 +82,9 @@ async function pasteFromClipboard() {
     text = await ClipboardGetText()
   }
   if (!text) return
-  // Join shell line continuations (backslash+newline) so multi-line commands paste as one
-  text = text.replace(/\\
-?
-[ 	]*/g, ' ').replace(/ {2,}/g, ' ').trim()
+  // Join shell line continuations (backslash+newline) into one line
+  text = text.split(String.fromCharCode(92,10)).join(' ').replace(/ {2,}/g, ' ').trim()
+
   SendInput(text)
 }
 // Ctrl+V paste
