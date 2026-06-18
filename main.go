@@ -431,7 +431,8 @@ func (t *TermWidget) send(s string) {
 
 func (t *TermWidget) DroppedFiles(uris []fyne.URI) {
 	for _, uri := range uris {
-		t.app.uploadFile(uri.Path())
+		path := uri.Path()
+		go t.app.uploadPath(path)
 	}
 }
 
@@ -478,9 +479,7 @@ func main() {
 	myApp.buildUI()
 
 	myApp.win.Show()
-	if hwnd := GetHWND(myApp.win); hwnd != 0 {
-		RegisterDropTarget(hwnd, myApp)
-	}
+	RegisterDropTargetOnThread(myApp.win, myApp)
 	myApp.fyneApp.Run()
 }
 
@@ -519,7 +518,7 @@ func (a *App) buildUI() {
 	})
 	a.connectBtn.Importance = widget.HighImportance
 
-	uploadBtn := widget.NewButton("⬆ Enviar arquivo", func() {
+	uploadFileBtn := widget.NewButton("⬆ Arquivo", func() {
 		a.sshMu.Lock()
 		connected := a.sshClient != nil
 		a.sshMu.Unlock()
@@ -528,11 +527,27 @@ func (a *App) buildUI() {
 			return
 		}
 		go func() {
-			path, err := sqDialog.File().Title("Enviar via SCP").Load()
+			path, err := sqDialog.File().Title("Enviar arquivo").Load()
 			if err != nil || path == "" {
 				return
 			}
-			a.uploadFile(path)
+			a.uploadPath(path)
+		}()
+	})
+	uploadFolderBtn := widget.NewButton("📁 Pasta", func() {
+		a.sshMu.Lock()
+		connected := a.sshClient != nil
+		a.sshMu.Unlock()
+		if !connected {
+			dialog.ShowError(fmt.Errorf("não conectado"), a.win)
+			return
+		}
+		go func() {
+			path, err := sqDialog.Directory().Title("Enviar pasta").Browse()
+			if err != nil || path == "" {
+				return
+			}
+			a.uploadPath(path)
 		}()
 	})
 
@@ -552,7 +567,7 @@ func (a *App) buildUI() {
 		),
 		a.connectBtn,
 		widget.NewSeparator(),
-		uploadBtn,
+		container.NewGridWithColumns(2, uploadFileBtn, uploadFolderBtn),
 		widget.NewLabel("Ou arraste arquivos para a janela"),
 		widget.NewSeparator(),
 		widget.NewLabel("Diretório remoto:"),
@@ -579,8 +594,9 @@ func (a *App) buildUI() {
 	a.split = container.NewHSplit(sidePanel, termPanel)
 	a.split.SetOffset(0.22)
 
-	// outer layout: [toggleBtn | split]
-	a.win.SetContent(container.NewBorder(nil, nil, a.toggleBtn, nil, a.split))
+	// toggleBtn in a top bar above everything
+	topBar := container.NewHBox(a.toggleBtn)
+	a.win.SetContent(container.NewBorder(topBar, nil, nil, nil, a.split))
 	a.win.Canvas().Focus(a.termWidget)
 }
 
@@ -816,7 +832,13 @@ func (a *App) disconnect() {
 	a.setPwd("~")
 }
 
+// uploadFile is called by DnD (single file path)
 func (a *App) uploadFile(path string) {
+	go a.uploadPath(path)
+}
+
+// uploadPath handles a file or directory recursively
+func (a *App) uploadPath(path string) {
 	a.sshMu.Lock()
 	client := a.sshClient
 	a.sshMu.Unlock()
@@ -825,52 +847,90 @@ func (a *App) uploadFile(path string) {
 		return
 	}
 
-	remoteDir := a.getPwd()
+	info, err := os.Stat(path)
+	if err != nil {
+		a.setStatus(fmt.Sprintf("Erro stat: %v", err))
+		return
+	}
 
-	go func() {
-		filename := filepath.Base(path)
-		a.setStatus(fmt.Sprintf("Enviando %s → %s ...", filename, remoteDir))
+	if info.IsDir() {
+		a.uploadDir(client, path, a.getPwd())
+	} else {
+		a.uploadSingleFile(client, path, a.getPwd())
+	}
+}
 
-		f, err := os.Open(path)
-		if err != nil {
-			a.setStatus(fmt.Sprintf("Erro ao abrir: %v", err))
-			return
+func (a *App) uploadDir(client *ssh.Client, localDir, remoteBase string) {
+	dirName := filepath.Base(localDir)
+	remoteDir := remoteBase + "/" + dirName
+
+	// mkdir -p on remote
+	sess, err := client.NewSession()
+	if err != nil {
+		a.setStatus(fmt.Sprintf("Erro sessão mkdir: %v", err))
+		return
+	}
+	sess.Run(fmt.Sprintf("mkdir -p %q", remoteDir))
+	sess.Close()
+
+	entries, err := os.ReadDir(localDir)
+	if err != nil {
+		a.setStatus(fmt.Sprintf("Erro lendo dir: %v", err))
+		return
+	}
+
+	for _, entry := range entries {
+		fullPath := filepath.Join(localDir, entry.Name())
+		if entry.IsDir() {
+			a.uploadDir(client, fullPath, remoteDir)
+		} else {
+			a.uploadSingleFile(client, fullPath, remoteDir)
 		}
-		defer f.Close()
+	}
+	a.setStatus(fmt.Sprintf("✓ pasta %s → %s", dirName, remoteDir))
+}
 
-		info, err := f.Stat()
-		if err != nil {
-			a.setStatus(fmt.Sprintf("Erro stat: %v", err))
-			return
-		}
+func (a *App) uploadSingleFile(client *ssh.Client, path, remoteDir string) {
+	filename := filepath.Base(path)
+	a.setStatus(fmt.Sprintf("Enviando %s → %s ...", filename, remoteDir))
 
-		session, err := client.NewSession()
-		if err != nil {
-			a.setStatus(fmt.Sprintf("Erro sessão SCP: %v", err))
-			return
-		}
-		defer session.Close()
+	f, err := os.Open(path)
+	if err != nil {
+		a.setStatus(fmt.Sprintf("Erro ao abrir: %v", err))
+		return
+	}
+	defer f.Close()
 
-		scpStdin, err := session.StdinPipe()
-		if err != nil {
-			return
-		}
+	info, err := f.Stat()
+	if err != nil {
+		a.setStatus(fmt.Sprintf("Erro stat: %v", err))
+		return
+	}
 
-		errCh := make(chan error, 1)
-		go func() { errCh <- session.Run(fmt.Sprintf("scp -t %q", remoteDir)) }()
+	session, err := client.NewSession()
+	if err != nil {
+		a.setStatus(fmt.Sprintf("Erro sessão SCP: %v", err))
+		return
+	}
+	defer session.Close()
 
-		fmt.Fprintf(scpStdin, "C0644 %d %s\n", info.Size(), filename)
-		io.Copy(scpStdin, f)
-		fmt.Fprint(scpStdin, "\x00")
-		scpStdin.Close()
+	scpStdin, err := session.StdinPipe()
+	if err != nil {
+		return
+	}
 
-		if err := <-errCh; err != nil {
-			a.setStatus(fmt.Sprintf("Erro SCP: %v", err))
-			dialog.ShowError(fmt.Errorf("Falha ao enviar %s:\n%v", filename, err), a.win)
-			return
-		}
-		msg := fmt.Sprintf("✓ %s → %s", filename, remoteDir)
-		a.setStatus(msg)
-		dialog.ShowInformation("Upload concluído", msg, a.win)
-	}()
+	errCh := make(chan error, 1)
+	go func() { errCh <- session.Run(fmt.Sprintf("scp -t %q", remoteDir)) }()
+
+	fmt.Fprintf(scpStdin, "C0644 %d %s\n", info.Size(), filename)
+	io.Copy(scpStdin, f)
+	fmt.Fprint(scpStdin, "\x00")
+	scpStdin.Close()
+
+	if err := <-errCh; err != nil {
+		a.setStatus(fmt.Sprintf("Erro SCP: %v", err))
+		return
+	}
+	msg := fmt.Sprintf("✓ %s → %s", filename, remoteDir)
+	a.setStatus(msg)
 }

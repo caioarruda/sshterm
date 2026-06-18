@@ -12,9 +12,8 @@ import (
 )
 
 var (
-	user32find      = windows.NewLazySystemDLL("user32.dll")
-	procFindWindow  = user32find.NewProc("FindWindowW")
-	procGetForegroundWindow = user32find.NewProc("GetForegroundWindow")
+	user32find     = windows.NewLazySystemDLL("user32.dll")
+	procFindWindow = user32find.NewProc("FindWindowW")
 )
 
 func findWindowByTitle(title string) uintptr {
@@ -23,15 +22,13 @@ func findWindowByTitle(title string) uintptr {
 	return hwnd
 }
 
-// GetHWND extracts the Win32 HWND from a Fyne window.
-// Tries Fyne NativeWindow first, falls back to FindWindowW by title.
+// GetHWND extracts the Win32 HWND and immediately registers drop target
+// from within RunNative, ensuring we're on the correct Win32 thread.
 func GetHWND(win fyne.Window) uintptr {
 	nw, ok := win.(driver.NativeWindow)
 	if !ok {
 		return findWindowByTitle("SSH Terminal")
 	}
-
-	// Retry up to 500ms — Fyne creates the Win32 window asynchronously
 	for i := 0; i < 10; i++ {
 		var hwnd uintptr
 		nw.RunNative(func(ctx any) {
@@ -44,7 +41,23 @@ func GetHWND(win fyne.Window) uintptr {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-
-	// Final fallback: find by window title
 	return findWindowByTitle("SSH Terminal")
+}
+
+// RegisterDropTargetOnThread registers DnD on the Win32 thread that owns the window.
+// Must be called after win.Show().
+func RegisterDropTargetOnThread(win fyne.Window, a *App) {
+	nw, ok := win.(driver.NativeWindow)
+	if !ok {
+		if hwnd := findWindowByTitle("SSH Terminal"); hwnd != 0 {
+			RegisterDropTarget(hwnd, a)
+		}
+		return
+	}
+	// RunNative executes on the OS thread that owns the window
+	nw.RunNative(func(ctx any) {
+		if wctx, ok := ctx.(driver.WindowsWindowContext); ok {
+			RegisterDropTarget(uintptr(wctx.HWND), a)
+		}
+	})
 }
