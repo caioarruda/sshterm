@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0.0",
+  "name": "sshterm",
+  "outputfilename": "sshterm",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "caioarruda"
+  }
+}

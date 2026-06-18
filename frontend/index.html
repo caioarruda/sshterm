@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SSH Terminal</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar open">
+      <div class="sidebar-header">
+        <span class="sidebar-title">SSH Terminal</span>
+      </div>
+
+      <div class="form-group">
+        <label>Host</label>
+        <input id="host" type="text" placeholder="hostname ou IP" />
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Porta</label>
+          <input id="port" type="text" value="22" />
+        </div>
+        <div class="form-group flex-2">
+          <label>Usuário</label>
+          <input id="username" type="text" placeholder="usuario" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Senha</label>
+        <input id="password" type="password" placeholder="senha" />
+      </div>
+      <div class="form-group">
+        <label>Chave SSH</label>
+        <input id="keypath" type="text" placeholder="~/.ssh/id_rsa" />
+      </div>
+
+      <button id="connectBtn" class="btn btn-primary" onclick="handleConnect()">
+        Conectar
+      </button>
+
+      <div class="divider"></div>
+
+      <div class="upload-section">
+        <button class="btn btn-secondary" onclick="handleUploadFiles()">⬆ Arquivos</button>
+        <button class="btn btn-secondary" onclick="handleUploadFolder()">📁 Pasta</button>
+      </div>
+
+      <div class="drop-hint">
+        ou arraste arquivos para o terminal
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="pwd-section">
+        <span class="pwd-label">Diretório remoto</span>
+        <span id="pwdDisplay" class="pwd-value">~</span>
+      </div>
+    </aside>
+
+    <!-- Toggle button -->
+    <button id="toggleBtn" class="toggle-btn" onclick="toggleSidebar()" title="Mostrar/ocultar painel">‹</button>
+
+    <!-- Terminal area -->
+    <main id="termContainer" class="term-container">
+      <div id="terminal"></div>
+      <div id="statusBar" class="status-bar">Desconectado</div>
+    </main>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
