@@ -1,51 +1,31 @@
-//go:build windows
+FROM golang:1.22-bullseye
 
-package main
+RUN dpkg --add-architecture i386 && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc-mingw-w64-x86-64 \
+        libz-mingw-w64-dev \
+        zip \
+    && rm -rf /var/lib/apt/lists/*
 
-import (
-	"syscall"
-	"unsafe"
+WORKDIR /build
 
-	"golang.org/x/sys/windows"
-)
+COPY go.mod go.sum* ./
+RUN go mod download
 
-var (
-	shell32        = windows.NewLazySystemDLL("shell32.dll")
-	user32dll      = windows.NewLazySystemDLL("user32.dll")
-	procDragAccept = shell32.NewProc("DragAcceptFiles")
-	procDragQuery  = shell32.NewProc("DragQueryFileW")
-	procDragFinish = shell32.NewProc("DragFinish")
-	procDefSubclass = user32dll.NewProc("DefSubclassProc")
-	procSetSubclass = user32dll.NewProc("SetWindowSubclass")
-)
+COPY . .
 
-const wmDropFiles = 0x0233
+ENV GOOS=windows \
+    GOARCH=amd64 \
+    CGO_ENABLED=1 \
+    CC=x86_64-w64-mingw32-gcc \
+    CGO_LDFLAGS="-static -lgdi32 -lopengl32 -lwinmm" \
+    FYNE_SCALE=1
 
-var gApp *App
+RUN go build \
+    -ldflags="-H windowsgui -s -w" \
+    -o sshterm.exe \
+    . && \
+    zip sshterm-windows-amd64.zip sshterm.exe
 
-func subclassProc(hwnd, msg, wParam, lParam, _, _ uintptr) uintptr {
-	if msg == wmDropFiles {
-		hDrop := wParam
-		count, _, _ := procDragQuery.Call(hDrop, 0xFFFFFFFF, 0, 0)
-		buf := make([]uint16, 32768)
-		for i := uintptr(0); i < count; i++ {
-			procDragQuery.Call(hDrop, i, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-			path := windows.UTF16ToString(buf)
-			if path != "" {
-				p := path
-				go gApp.uploadFile(p)
-			}
-		}
-		procDragFinish.Call(hDrop)
-		return 0
-	}
-	ret, _, _ := procDefSubclass.Call(hwnd, msg, wParam, lParam)
-	return ret
-}
-
-func RegisterDropTarget(hwnd uintptr, a *App) {
-	gApp = a
-	procDragAccept.Call(hwnd, 1)
-	cb := syscall.NewCallback(subclassProc)
-	procSetSubclass.Call(hwnd, cb, 1, 0)
-}
+CMD ["cp", "sshterm-windows-amd64.zip", "/out/sshterm-windows-amd64.zip"]

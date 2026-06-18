@@ -1,11 +1,5 @@
-module sshterm
+//go:build !windows
 
-go 1.22
+package main
 
-require (
-	fyne.io/fyne/v2 v2.5.2
-	fyne.io/terminal v0.1.0
-	github.com/sqweek/dialog v0.0.0-20240226140203-065105509627
-	golang.org/x/crypto v0.27.0
-	golang.org/x/sys v0.25.0
-)
+func RegisterDropTarget(hwnd uintptr, a *App) {}

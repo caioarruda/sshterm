@@ -1,5 +1,62 @@
-//go:build !windows
+name: Release
 
-package main
+on:
+  push:
+    tags:
+      - 'v*'
 
-func RegisterDropTarget(hwnd uintptr, a *App) {}
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Install cross-compile deps
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-mingw-w64-x86-64 \
+            libz-mingw-w64-dev \
+            zip
+
+      - name: Tidy modules
+        run: go mod tidy
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build Windows exe
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 1
+          CC: x86_64-w64-mingw32-gcc
+          CGO_LDFLAGS: "-static -lgdi32 -lopengl32 -lwinmm"
+        run: |
+          go build \
+            -ldflags="-H windowsgui -s -w" \
+            -o sshterm.exe \
+            .
+          zip sshterm-windows-amd64.zip sshterm.exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "sshterm ${{ github.ref_name }}"
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          generate_release_notes: true
+          files: |
+            sshterm-windows-amd64.zip
