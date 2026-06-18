@@ -16,7 +16,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	fyneterm "fyne.io/x/terminal"
+	fyneterm "github.com/fyne-io/terminal"
 	sqDialog "github.com/sqweek/dialog"
 	"golang.org/x/crypto/ssh"
 )
