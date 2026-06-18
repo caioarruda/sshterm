@@ -83,7 +83,10 @@ async function pasteFromClipboard() {
   }
   if (!text) return
   // Join shell line continuations (backslash+newline) into one line
-  text = text.split(String.fromCharCode(92,10)).join(' ').replace(/ {2,}/g, ' ').trim()
+  text = text.split(/\r?\n/).reduce(function(acc, l) {
+    if (acc.endsWith('\\')) return acc.slice(0, -1).trimEnd() + ' ' + l.trimStart()
+    return acc ? acc + '\n' + l : l
+  }).trim()
 
   SendInput(text)
 }
