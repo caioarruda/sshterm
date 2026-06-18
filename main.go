@@ -1,6 +1,6 @@
 package main
 
-
+const pwdMarker = "__SSHTERM_PWD__:"
 
 import (
 	"fmt"
@@ -22,8 +22,6 @@ import (
 	sqDialog "github.com/sqweek/dialog"
 	"golang.org/x/crypto/ssh"
 )
-
-const pwdMarker = "__SSHTERM_PWD__:"
 
 // TermBuffer holds a grid of cells and processes VT100/xterm sequences.
 type cell struct {
@@ -456,6 +454,8 @@ type App struct {
 	keyPath    *widget.Entry
 	currentPwd string
 	pwdMu      sync.Mutex
+	split      *container.Split
+	sideVisible bool
 }
 
 const (
@@ -561,17 +561,33 @@ func (a *App) buildUI() {
 	a.termWidget = newTermWidget(a, termCols, termRows)
 	termScroll := container.NewScroll(a.termWidget)
 
+	toggleBtn := widget.NewButton("◀", func() {
+		a.toggleSidebar()
+	})
+	toggleBtn.Importance = widget.LowImportance
+
 	termPanel := container.NewBorder(
 		nil,
 		a.statusBar,
-		nil, nil,
+		toggleBtn, nil,
 		termScroll,
 	)
 
-	split := container.NewHSplit(sidePanel, termPanel)
-	split.SetOffset(0.22)
-	a.win.SetContent(split)
+	a.sideVisible = true
+	a.split = container.NewHSplit(sidePanel, termPanel)
+	a.split.SetOffset(0.22)
+	a.win.SetContent(a.split)
 	a.win.Canvas().Focus(a.termWidget)
+}
+
+func (a *App) toggleSidebar() {
+	if a.sideVisible {
+		a.split.SetOffset(0)
+		a.sideVisible = false
+	} else {
+		a.split.SetOffset(0.22)
+		a.sideVisible = true
+	}
 }
 
 func (a *App) setStatus(msg string) { a.statusBar.SetText(msg) }
@@ -840,8 +856,11 @@ func (a *App) uploadFile(path string) {
 
 		if err := <-errCh; err != nil {
 			a.setStatus(fmt.Sprintf("Erro SCP: %v", err))
+			dialog.ShowError(fmt.Errorf("Falha ao enviar %s:\n%v", filename, err), a.win)
 			return
 		}
-		a.setStatus(fmt.Sprintf("✓ %s → %s", filename, remoteDir))
+		msg := fmt.Sprintf("✓ %s → %s", filename, remoteDir)
+		a.setStatus(msg)
+		dialog.ShowInformation("Upload concluído", msg, a.win)
 	}()
 }
