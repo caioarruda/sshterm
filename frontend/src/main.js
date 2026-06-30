@@ -53,7 +53,7 @@ const term = new Terminal({
   cursorStyle: 'block',
   scrollback: 5000,
   allowTransparency: false,
-  copyOnSelect: true,
+  rightClickSelectsWord: false,
 })
 
 const fitAddon = new FitAddon()
@@ -74,12 +74,11 @@ ro.observe(document.getElementById('terminal'))
 // Keyboard input → SSH
 term.onData(data => SendInput(data))
 
-// Copy on select — sync to Windows clipboard via Go
+// Copy on select — always via Go runtime (reliable in WebView2,
+// unlike navigator.clipboard which needs document focus/permissions)
 term.onSelectionChange(() => {
   const sel = term.getSelection()
-  if (!sel) return
-  // Try browser clipboard first, fall back to Go runtime
-  navigator.clipboard.writeText(sel).catch(() => ClipboardSetText(sel))
+  if (sel) ClipboardSetText(sel)
 })
 
 // Paste helper — tries browser clipboard first, falls back to Go runtime
@@ -110,10 +109,27 @@ term.attachCustomKeyEventHandler(e => {
   return true
 })
 
-// Right-click paste
+// Right-click: PuTTY behavior — copy selection if there is one, paste otherwise
 document.getElementById('terminal').addEventListener('contextmenu', e => {
   e.preventDefault()
-  pasteFromClipboard()
+  const sel = term.getSelection()
+  if (sel) {
+    navigator.clipboard.writeText(sel).catch(() => ClipboardSetText(sel))
+    term.clearSelection()
+  } else {
+    pasteFromClipboard()
+  }
+})
+
+// Middle-click paste (X11/PuTTY convention)
+document.getElementById('terminal').addEventListener('mousedown', e => {
+  if (e.button === 1) {
+    e.preventDefault()
+    pasteFromClipboard()
+  }
+})
+document.getElementById('terminal').addEventListener('auxclick', e => {
+  if (e.button === 1) e.preventDefault()
 })
 
 // SSH output → terminal
@@ -189,6 +205,22 @@ window.handleConnect = async function () {
     fitAddon.fit()
     const dims = fitAddon.proposeDimensions()
     if (dims) Resize(dims.cols, dims.rows)
+
+    // Auto-save this host if it's not already saved (matched by host+port+user)
+    const existingHosts = await GetHosts()
+    const alreadySaved = existingHosts.some(h => h.host === host && h.port === port && h.user === user)
+    if (!alreadySaved) {
+      await SaveHost({
+        id: '',
+        name: document.getElementById('hostName').value.trim() || `${user}@${host}`,
+        host, port, user, keyPath: key,
+      })
+      const updated = await GetHosts()
+      const saved = updated.find(h => h.host === host && h.port === port && h.user === user)
+      if (saved) activeHostId = saved.id
+      loadHosts()
+    }
+
     // Auto-collapse sidebar after connect
     if (document.getElementById('sidebar').classList.contains('open')) {
       toggleSidebar()
@@ -327,6 +359,14 @@ window.handleSaveHost = async function () {
 }
 
 loadHosts()
+
+// Clear activeHostId whenever the user edits host/user/port manually —
+// this signals they're entering a NEW connection, not editing the selected one
+;['host', 'username', 'port'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    activeHostId = null
+  })
+})
 
 EventsOn('download:progress', msg => setStatus(msg, true))
 EventsOn('download:done', msg => {
