@@ -91,13 +91,24 @@ async function pasteFromClipboard() {
     text = await ClipboardGetText()
   }
   if (!text) return
-  // Join shell line continuations (backslash+newline) into one line
-  text = text.split(/\r?\n/).reduce(function(acc, l) {
-    if (acc.endsWith('\\')) return acc.slice(0, -1).trimEnd() + ' ' + l.trimStart()
-    return acc ? acc + '\n' + l : l
-  }).trim()
 
-  SendInput(text)
+  // Normalize line endings
+  text = text.replace(/\r\n/g, '\n')
+
+  if (term.modes.bracketedPasteMode) {
+    // App (nano, vim, etc) requested bracketed paste mode — send raw,
+    // wrapped in paste markers. This preserves newlines correctly and
+    // tells the app it's pasted content, not typed keystrokes.
+    SendInput('\x1b[200~' + text + '\x1b[201~')
+  } else {
+    // Plain shell prompt: join backslash line-continuations into one line
+    // so multi-line commands (docker run \\<newline> -e FOO ...) paste as one command
+    const joined = text.split('\n').reduce(function(acc, l) {
+      if (acc.endsWith('\\')) return acc.slice(0, -1).trimEnd() + ' ' + l.trimStart()
+      return acc ? acc + '\n' + l : l
+    }).trim()
+    SendInput(joined)
+  }
 }
 // Ctrl+V paste
 term.attachCustomKeyEventHandler(e => {
